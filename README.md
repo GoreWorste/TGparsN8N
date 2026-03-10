@@ -218,3 +218,4 @@ curl -X POST http://localhost:8001/classify/pdf \
 
 Добавьте сюда выбранную лицензию (MIT/Apache‑2.0/etc.), если планируете публиковать репозиторий.
 
+# TGparsN8N
