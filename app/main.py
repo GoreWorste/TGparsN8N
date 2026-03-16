@@ -49,11 +49,51 @@ class ClassifiedItem(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class StandardNewsItem(BaseModel):
+    """Единая шаблонная структура новости, которую возвращает поле output."""
+    id: str | None = None
+    title: str | None = None
+    content: str | None = None
+    dateTime: str | None = None
+    source: str | None = None
+    url: str | None = None
+    imageUrl: str | None = None
+
+
 class FilterResponse(BaseModel):
     kept: list[ClassifiedItem]
     removed: list[ClassifiedItem]
-    output: list[NewsItem]
+    output: list[StandardNewsItem]
     stats: dict[str, Any]
+
+
+def _to_standard(item: NewsItem) -> StandardNewsItem:
+    """Конвертирует внутренний NewsItem в стандартную шаблонную структуру."""
+    # content: предпочитаем text, fallback на description
+    content = (item.text or item.description or "").strip() or None
+
+    # title: берём из title, если нет — первые 80 символов content
+    title = item.title
+    if not title and content:
+        title = content[:80].rstrip() + ("…" if len(content) > 80 else "")
+
+    # id как строка
+    item_id = str(item.id) if item.id is not None else None
+
+    # imageUrl из extra (парсер Telegram кладёт туда photoUrl/videoThumbUrl)
+    image_url: str | None = None
+    if isinstance(item.extra, dict):
+        image_url = item.extra.get("photoUrl") or item.extra.get("videoThumbUrl") or None
+
+    return StandardNewsItem(
+        id=item_id,
+        title=title,
+        content=content,
+        dateTime=item.published_at,
+        source=item.source,
+        url=item.url,
+        imageUrl=image_url,
+    )
 
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -503,7 +543,7 @@ async def filter_news(
     return FilterResponse(
         kept=kept,
         removed=removed,
-        output=[ci.item for ci in kept],
+        output=[_to_standard(ci.item) for ci in kept],
         stats={
             "total": len(parsed_request.items),
             "kept": len(kept),
