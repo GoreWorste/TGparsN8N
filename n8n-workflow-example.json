@@ -1,0 +1,76 @@
+{
+  "name": "News Filter via Microservice",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "news-incoming",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      },
+      "id": "webhook_node",
+      "name": "Incoming Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/filter",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"max_age_days\": 7,\n  \"language\": \"ru\",\n  \"items\": $json.items\n}",
+        "options": {}
+      },
+      "id": "http_filter_node",
+      "name": "Filter News Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"kept\": $json.kept, \"removed\": $json.removed, \"stats\": $json.stats } }}"
+      },
+      "id": "respond_node",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        780,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Incoming Webhook": {
+      "main": [
+        [
+          {
+            "node": "Filter News Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter News Service": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

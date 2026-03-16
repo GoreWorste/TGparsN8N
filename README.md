@@ -1,221 +1,307 @@
-## Content Priority Classifier (Telegram → JSON → PDF)
+## News Filter Service for n8n и Telegram‑каналы
 
-Инструмент для сортировки новостных постов по важности (красный / жёлтый / зелёный светофор) с помощью OpenRouter и генерации красивого PDF‑отчёта. 
+Микросервис, который принимает **сырые новости из нескольких источников** (Telegram, веб‑страницы и др.) и на лету:
 
-Работает:
-- **как CLI‑утилита** по JSON‑файлу
-- **как HTTP‑сервис** (FastAPI) — удобно подключать к **n8n**, Telegram‑ботам и другим пайплайнам.
+- **выбрасывает рекламу** и нативные промо‑посты;
+- **режет фейки/неподтверждённые слухи** и кликбейт;
+- **отсекает устаревшие новости**, оставляя только посты за последние **N часов** (по умолчанию 24);
+- объединяет несколько массивов (`tgPosts`, `webPosts`, `allPosts`, `posts`, `data` и пр.) в **единый поток**;
+- возвращает удобный массив `output`, который можно сразу отправлять в Telegram‑бота, n8n, Notion, базу данных и т.д.
 
-Проект кроссплатформенный — всё работает на **Linux / macOS / Windows**, нужен только Python 3.10+.
+Вся семантическая фильтрация делается через **OpenRouter LLM**, поверх неё добавлены строгие **rule‑based проверки** по дате/структуре поста.
 
 ---
 
 ## Возможности
 
-- **Классификация постов** на три уровня важности:
-  - 🔴 `HIGH` — важно / срочно
-  - 🟡 `MEDIUM` — полезно знать
-  - 🟢 `LOW` — неважно / шум
-- **Входной формат**: массив объектов с текстом (`text`) или объект с полем `allPosts` / `posts` — подходит к типичному JSON после парсинга Telegram‑каналов.
-- **PDF‑отчёт**:
-  - таблица с количеством постов каждого уровня
-  - карточки постов с текстом, датой, автором, просмотрами и ссылкой
-  - поддержка кириллицы (шрифты DejaVu, с запасным вариантом)
-- **HTTP API**:
-  - `POST /classify` → JSON с разбивкой по важности
-  - `POST /classify/pdf` → готовый PDF‑файл
+- **Глубокая фильтрация рекламы**:
+  - явная реклама (курсы, инфопродукты, казино, ставки, скидки, промокоды, партнёрские ссылки);
+  - скрытая нативка, когда текст выглядит как новость, но цель — продать / подписать / завлечь;
+  - промо‑посты, розыгрыши, конкурсы, "пассивный доход", ICO/NFT‑проекты и т.п.
+- **Фильтр фейков / непроверенных новостей**:
+  - кликбейт без фактов;
+  - "источники сообщают", конспирология, теории заговора;
+  - сенсационные заголовки без содержательной части.
+- **Жёсткий фильтр по времени**:
+  - параметр `max_age_hours` (по умолчанию `24`);
+  - время считается **в часах** через `total_seconds()`, а не грубо по дням — не проскочит новость "23:59 вчера".
+- **Интеграция с n8n**:
+  - умеет принимать несколько JSON‑массивов сразу (например, `tgPosts` + `webPosts`);
+  - понимает типичные структуры после парсинга Telegram‑каналов;
+  - выдаёт `output` как готовый список чистых новостей.
 
 ---
 
-## Требования
+## Архитектура
 
-- Python **3.10+**
-- Доступ к **OpenRouter** и API‑ключ (`OPENROUTER_API_KEY`)
-
-Python‑зависимости (также есть в `requirements.txt`):
-
-- `httpx`
-- `fastapi`
-- `uvicorn[standard]`
-- `reportlab`
+- **FastAPI‑приложение**: `app/main.py`
+  - эндпоинты:
+    - `GET /health` — проверка живости;
+    - `POST /filter` — основная фильтрация новостей.
+- **Интеграция с OpenRouter**:
+  - один промпт с правилами по рекламе/фейкам/устаревшим новостям;
+  - автоматические ретраи на сетевые/5xx‑ошибки.
+- **Нормализация входных данных**:
+  - маппинг полей из Telegram/n8n (`postId`, `author`, `message`, `caption`, `link`, `dateTime`, `sortableDate` и др.) в унифицированную модель `NewsItem`;
+  - очистка текста от подписи "подпишись на канал", лишних эмодзи и хвостов ссылок.
 
 ---
 
-## Установка (Linux / macOS / Windows)
+## Установка и запуск
+
+### 1. Клонирование и зависимости
 
 ```bash
-git clone <your-repo-url> content-priority-classifier
-cd content-priority-classifier
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
 
-# Рекомендуется отдельное виртуальное окружение
-python -m venv .venv
-
-# Linux / macOS
+python3 -m venv .venv
 source .venv/bin/activate
 
-# Windows (PowerShell)
-# .venv\Scripts\Activate.ps1
-
 pip install -r requirements.txt
+cp .env.example .env
+```
+
+### 2. Настройка `.env`
+
+В `.env` укажи:
+
+```env
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_MODEL=deepseek/deepseek-chat-v3-0324:free
+REQUEST_TIMEOUT_SECONDS=45
+```
+
+- **`OPENROUTER_API_KEY`** — твой ключ OpenRouter (обязательно);
+- **`OPENROUTER_MODEL`** — модель, можно заменить на любую доступную в OpenRouter;
+- **`REQUEST_TIMEOUT_SECONDS`** — таймаут запросов к OpenRouter.
+
+Ключи и секреты **никогда не коммить** в репозиторий.
+
+### 3. Локальный запуск
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+Проверка:
+
+```bash
+curl http://localhost:8080/health
+```
+
+### 4. Запуск в Docker
+
+Если есть `Dockerfile`:
+
+```bash
+docker build -t news-filter-service .
+docker run --rm -p 8080:8080 --env-file .env news-filter-service
 ```
 
 ---
 
-## Настройка OpenRouter
+## Форматы входных данных
 
-1. Получите API‑ключ на OpenRouter и сохраните его в переменной окружения:
+Сервис терпим к разным структурам JSON.
 
-   ### Linux / macOS (bash/zsh)
-   ```bash
-   export OPENROUTER_API_KEY="sk-or-..."
-   ```
-
-   ### Windows (PowerShell)
-   ```powershell
-   setx OPENROUTER_API_KEY "sk-or-..."
-   ```
-
-2. (Необязательно) можно переопределить модель и URL:
-
-   ```bash
-   export OPENROUTER_MODEL="openai/gpt-4o-mini"
-   export OPENROUTER_URL="https://openrouter.ai/api/v1/chat/completions"
-   ```
-
-Файл `config.py` читает настройки только из окружения — **секреты не хранятся в репозитории**.
-
----
-
-## Формат входного JSON
-
-Поддерживаются несколько удобных форматов:
+### Вариант 1: простой массив
 
 ```json
 [
-  { "text": "первый пост", "url": "...", "views": 100 },
-  { "text": "второй пост" }
+  { "text": "новость 1", "published_at": "2026-03-13T10:00:00Z" },
+  { "text": "новость 2" }
 ]
 ```
 
+### Вариант 2: объект с `items`
+
 ```json
 {
-  "allPosts": [
-    { "text": "первый пост", "url": "...", "views": 100 }
+  "items": [
+    { "text": "новость 1" },
+    { "text": "новость 2" }
   ]
 }
 ```
 
+### Вариант 3: несколько массивов (Telegram + Web)
+
 ```json
 {
-  "posts": [
-    { "text": "первый пост" }
+  "tgPosts": [
+    { "postId": "rian_ru/335034", "author": "РИА Новости", "text": "Текст...", "sortableDate": "2026-03-13T06:22:52+00:00", "link": "https://t.me/rian_ru/335034" }
+  ],
+  "webPosts": [
+    { "id": "site-1", "title": "Скидки 90%", "text": "Переходи по ссылке...", "published_at": "2026-03-13T07:00:00+00:00", "url": "https://example.com" }
   ]
 }
 ```
 
-Дополнительные поля (`author`, `dateTime`, `views`, `url`) будут использованы в PDF, если присутствуют.
+Сервис:
+
+- находит все массивы (`items`, `allPosts`, `posts`, `data`, `tgPosts`, `webPosts` и др.);
+- объединяет их в один список;
+- маппит поля в `NewsItem` (id, text, description, url, source, published_at);
+- фильтрует по дате, рекламе, фейкам.
+
+### Маппинг полей
+
+- **ID**: `postId`, `post_id` → `id`;
+- **источник**: `author`, `channel` → `source`;
+- **время публикации**:
+  - `sortableDate` (ISO) → `published_at` (наивысший приоритет);
+  - `dateTimeRaw` → `published_at`;
+  - `dateTime.iso` / `dateTime.raw` → `published_at`;
+  - `date`, `publishedAt`, `date_time` → fallback;
+- **текст**:
+  - `message`, `content`, `body` → `text`;
+  - `caption`, `summary` → `description`.
+
+Также из `text`/`description` убираются:
+
+- хвосты вида "Подписаться на …", ссылочные подписи `https://t.me/...`;
+- одиночные строки‑эмодзи и маркеры "подписывайтесь".
 
 ---
 
-## CLI‑режим (`main.py`)
+## API: `POST /filter`
 
-Примеры:
+### Query‑параметры
 
-```bash
-# Обработать JSON и вывести результат в stdout
-python main.py input.json
+- **`max_age_hours`** — максимальный возраст новости в часах (по умолчанию `24`);
+- **`max_age_days`** — *легаси‑параметр*; если указан, конвертируется в часы (`days * 24`);
+- **`language`** — язык текста для промпта (по умолчанию `"ru"`).
 
-# Сохранить результат в файл
-python main.py input.json -o result.json
+### Тело запроса (пример)
 
-# Показать только важные (HIGH)
-python main.py input.json --only HIGH
+```json
+{
+  "tgPosts": [
+    {
+      "postId": "rian_ru/335034",
+      "author": "РИА Новости",
+      "text": "Одну из самых длительных атак ВСУ отразили в Севастополе...",
+      "sortableDate": "2026-03-13T06:22:52+00:00",
+      "link": "https://t.me/rian_ru/335034"
+    }
+  ],
+  "webPosts": [
+    {
+      "id": "site-1",
+      "title": "Скидки 90% только сегодня",
+      "text": "Переходи по ссылке, чтобы купить курс...",
+      "published_at": "2026-03-13T07:00:00+00:00",
+      "url": "https://spam-site.example/promo"
+    }
+  ]
+}
 ```
 
-Описание формата входа и поведения есть в самом файле `main.py`.
-
----
-
-## HTTP‑API (FastAPI сервер)
-
-Запуск сервера:
+### Пример запроса через `curl`
 
 ```bash
-# Linux / macOS
-source .venv/bin/activate
-uvicorn server:app --host 0.0.0.0 --port 8001
-
-# Windows (PowerShell)
-# .venv\Scripts\Activate.ps1
-# uvicorn server:app --host 0.0.0.0 --port 8001
-```
-
-После запуска:
-
-- `GET  /health` — проверка живости сервера
-- `POST /classify` — вернуть JSON с приоритетами
-- `POST /classify/pdf` — вернуть PDF
-
-### Примеры запросов
-
-**JSON‑классификация:**
-
-```bash
-curl -X POST http://localhost:8001/classify \
+curl -X POST "http://localhost:8080/filter?max_age_hours=24&language=ru" \
   -H "Content-Type: application/json" \
-  -d '{"posts":[{"text":"пример поста"}]}'
+  -d @input.json
 ```
 
-**PDF‑отчёт:**
+### Пример ответа
 
-```bash
-curl -X POST http://localhost:8001/classify/pdf \
-  -H "Content-Type: application/json" \
-  -d '{
-        "posts":[{"text":"пример поста"}],
-        "channel":"@test_channel",
-        "title":"Дайджест за сегодня"
-      }' \
-  -o digest.pdf
+```json
+{
+  "kept": [ ... ],
+  "removed": [ ... ],
+  "output": [ ... ],
+  "stats": {
+    "total": 2,
+    "kept": 1,
+    "removed": 1,
+    "errors": 0,
+    "model": "deepseek/deepseek-chat-v3-0324:free",
+    "max_age_hours": 24
+  }
+}
 ```
+
+**Структура:**
+
+- **`kept`**: список объектов `ClassifiedItem` c полями:
+  - `item` — исходная новость (`NewsItem`);
+  - `keep` — флаг, оставлена ли новость;
+  - `reason` — короткое описание решения;
+  - `is_ad`, `is_fake_or_unverified`, `is_outdated`;
+  - `confidence` — уверенность модели (0–1).
+- **`removed`**: всё, что отфильтровано (реклама, фейки, устаревшее, ошибки).
+- **`output`**: **чистый массив `NewsItem`** — его удобно использовать в n8n.
+- **`stats`**: агрегированная статистика.
 
 ---
 
-## Интеграция с n8n (кратко)
+## Интеграция с n8n
 
-Базовая схема:
+### Пример пайплайна (Telegram + Web → Filter → Telegram)
 
-1. Нода парсинга Telegram → выдаёт JSON с полем `allPosts`.
-2. Нода **HTTP Request**:
-   - **Method**: `POST`
-   - **URL**: `http(s)://<ваш-домен-или-туннель>/classify/pdf`
-   - **Body Content Type**: `JSON`
-   - **Body**:
-     - `posts`   = `{{$json["allPosts"]}}`
-     - `channel` = `{{$json["channel_link"] || ""}}`
-     - `title`   = `Дайджест`
-3. Нода отправки файла (например, Telegram) берёт бинарный ответ из HTTP Request.
+- **Config / Schedule**  
+  Нода `Schedule Trigger` + `Set (Config)` с массивом ссылок каналов.
+- **Парсинг Telegram**  
+  `HTTP Request` → HTML → `Code` (парсит HTML Telegram‑виджета в `allPosts` с полями `postId`, `author`, `text`, `sortableDate`, `dateTime`, `url` и др.).
+- **Парсинг веба**  
+  Любой набор нод, который выдаёт `webPosts` (массив объектов).
+- **Merge**  
+  Нода `Merge` склеивает потоки.
+- **HTTP Request → /filter**  
+  - Method: `POST`  
+  - URL: `https://<твой-туннель>/filter?max_age_hours=24&language=ru`  
+  - Body (JSON):
 
-Если нужно, рядом с проектом есть пример workflow: `n8n_workflow.json`.
+    ```json
+    {
+      "tgPosts": {{$json["allPosts"]}},
+      "webPosts": {{$json["webPosts"] || []}}
+    }
+    ```
+
+- **Отправка результатов**  
+  В следующей ноде бери `{{$json["output"]}}`:
+  - можно сделать `Split Out` по `output`;
+  - и отправить каждый элемент в `Telegram` / `Slack` / БД и т.д.
 
 ---
 
-## Разработка
+## Как определяется реклама
 
-- Код отформатирован в стиле PEP 8 и разбит на модули:
-  - `classifier.py` — работа с OpenRouter
-  - `pdf_report.py` — генерация PDF
-  - `server.py` — HTTP‑API (FastAPI)
-  - `main.py` — CLI
-- Для изменения логики важности настроить:
-  - `TOPIC_DESCRIPTION`
-  - `CLASSIFY_PROMPT`
-  в файле `config.py`.
+Промпт для LLM описывает:
+
+- **Основной смысл текста**:
+  - если главная цель — продать / подписать / завлечь → реклама;
+  - если главная цель — сообщить о факте / событии → новость.
+- **Признаки рекламы**:
+  - промокоды, скидки, "только сегодня", "успей", "осталось N мест";
+  - курсы, казино, ставки, инвестиционные офферы, "пассивный доход";
+  - CTA: "купи", "перейди по ссылке", "подпишись", "забронируй";
+  - реферальные/партнёрские ссылки, розыгрыши, конкурсы.
+- **Скрытая реклама (нативка)**:
+  - текст формально выглядит как новость, но подводит к покупке/ссылке;
+  - чрезмерно хвалебный тон о продукте/бренде с ценой и ссылкой.
+
+Отдельно перечислено, что **не считается рекламой**:
+
+- новости о компаниях (штрафы, сделки, отчёты);
+- официальные заявления госорганов;
+- стандартные подписи каналов (которые дополнительно очищаются на этапе pre‑processing).
+
+---
+
+## Безопасность и ограничения
+
+- **API‑ключ OpenRouter** должен храниться только в `.env` или переменных окружения.
+- Результат LLM вероятностный — для критичных сценариев:
+  - добавь whitelist доверенных `source`;
+  - можно поверх результата сервиса добавить свои бизнес‑правила в n8n.
 
 ---
 
 ## Лицензия
 
-Добавьте сюда выбранную лицензию (MIT/Apache‑2.0/etc.), если планируете публиковать репозиторий.
-
-# TGparsN8N
+Добавь сюда выбранную лицензию (MIT / Apache‑2.0 / GPL и т.д.), если планируешь публиковать репозиторий на GitHub. Сейчас файл оставлен без конкретной лицензии, чтобы ты мог выбрать подходящую. 
